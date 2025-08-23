@@ -123,6 +123,15 @@ class LinkPrediction(tasks.Task, core.Configurable):
         valid_mask = train_set.indices + valid_set.indices
         train_graph = dataset.graph.edge_mask(train_mask)
         valid_graph = dataset.graph.edge_mask(valid_mask)
+
+      # Print nodes and edges
+        print(type(train_graph))
+        print("Train graph edge:", train_graph.edge_list)
+        print("Valid graph edge:", valid_graph.edge_list)
+
+
+
+
         self.register_buffer("train_graph", train_graph.undirected())
         self.register_buffer("valid_graph", valid_graph.undirected())
         self.register_buffer("test_graph", dataset.graph.undirected())
@@ -193,6 +202,7 @@ class LinkPrediction(tasks.Task, core.Configurable):
         t_index[:, 1:] = neg_t_index
 
         pred = self.model(self.train_graph, h_index, t_index, all_loss=all_loss, metric=metric)
+        print(type(pred))
         target = torch.zeros_like(pred)
         target[:, 0] = 1
         return pred, target

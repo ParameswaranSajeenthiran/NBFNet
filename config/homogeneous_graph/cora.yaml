@@ -27,7 +27,7 @@ optimizer:
 
 engine:
   gpus: {{ gpus }}
-  batch_size: 64
+  batch_size: 32
 
 train:
   num_epoch: 20

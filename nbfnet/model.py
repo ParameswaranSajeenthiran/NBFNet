@@ -80,6 +80,7 @@ class NeuralBellmanFordNetwork(nn.Module, core.Configurable):
         # add self loop
         # convert homogeneous graphs to knowledge graphs with 1 relation
         edge_list = graph.edge_list
+        # print(edge_list)
         edge_weight = graph.edge_weight
         if self_loop:
             node_in = node_out = torch.arange(graph.num_node, device=self.device)
@@ -94,6 +95,7 @@ class NeuralBellmanFordNetwork(nn.Module, core.Configurable):
 
     def bellmanford(self, graph, h_index, r_index, separate_grad=False):
         query = self.query(r_index)
+        
         index = h_index.unsqueeze(-1).expand_as(query)
         boundary = torch.zeros(graph.num_node, *query.shape, device=self.device)
         boundary.scatter_add_(0, index.unsqueeze(0), query.unsqueeze(0))
