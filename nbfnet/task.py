@@ -298,6 +298,7 @@ class InductiveKnowledgeGraphCompletion(tasks.KnowledgeGraphCompletion, core.Con
             t_index[:batch_size // 2, 1:] = neg_index[:batch_size // 2]
             h_index[batch_size // 2:, 1:] = neg_index[batch_size // 2:]
             pred = self.model(graph, h_index, t_index, r_index, all_loss=all_loss, metric=metric)
+            print(f"Pred 301 shape: {pred.shape}")
 
         return pred
 
@@ -324,12 +325,19 @@ class InductiveKnowledgeGraphCompletion(tasks.KnowledgeGraphCompletion, core.Con
 
         mask = torch.stack([t_mask, h_mask], dim=1)
         target = torch.stack([pos_t_index, pos_h_index], dim=1)
+        print(f"Mask: {mask}")
+        print(f"Mask shape: {mask.shape}")
+        print(f"Target: {target}")
+        print(f"Target shape: {target.shape}")
+
 
         # in case of GPU OOM
         return mask.cpu(), target.cpu()
 
     def evaluate(self, pred, target):
         mask, target = target
+
+        print(f"Pred : {pred.shape}")
 
         pos_pred = pred.gather(-1, target.unsqueeze(-1))
         ranking = torch.sum((pos_pred <= pred) & mask, dim=-1) + 1

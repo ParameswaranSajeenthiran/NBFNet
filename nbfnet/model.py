@@ -148,9 +148,16 @@ class NeuralBellmanFordNetwork(nn.Module, core.Configurable):
         assert (h_index[:, [0]] == h_index).all()
         assert (r_index[:, [0]] == r_index).all()
         output = self.bellmanford(graph, h_index[:, 0], r_index[:, 0])
+        print(f"[DEBUG] Output from bellmanford: node_feature shape: {output['node_feature'].shape}")
+
         feature = output["node_feature"].transpose(0, 1)
+        print(f"[DEBUG] Feature after transpose: {feature.shape}")
+
         index = t_index.unsqueeze(-1).expand(-1, -1, feature.shape[-1])
+        print(f"[DEBUG] Index for gather: {index.shape}")
+
         feature = feature.gather(1, index)
+        print(f"[DEBUG] Feature after gather: {feature.shape}")
 
         if self.symmetric:
             assert (t_index[:, [0]] == t_index).all()
@@ -161,6 +168,8 @@ class NeuralBellmanFordNetwork(nn.Module, core.Configurable):
             feature = (feature + inv_feature) / 2
 
         score = self.mlp(feature).squeeze(-1)
+        print(f"[DEBUG] Score: {score}")
+        print(f"[DEBUG] Returning score with shape: {score.view(shape).shape}")
         return score.view(shape)
 
     def visualize(self, graph, h_index, t_index, r_index):
