@@ -23,7 +23,7 @@ class TemporalKnowledgeGraphCompletion(tasks.Task, core.Configurable):
 
     def __init__(self, model, criterion="bce",
                  metric=("mr", "mrr", "hits@1", "hits@3", "hits@10"),
-                 num_negative=1, strict_negative=True, filtered_ranking=True,
+                 num_negative=100, strict_negative=True, filtered_ranking=True,
                  full_batch_eval=True,
                  debug=False):
         super().__init__()
@@ -35,6 +35,7 @@ class TemporalKnowledgeGraphCompletion(tasks.Task, core.Configurable):
         self.filtered_ranking = filtered_ranking
         self.full_batch_eval = full_batch_eval
         self.debug = debug
+        self.progress = 0
 
     def preprocess(self, train_set, valid_set, test_set):
         if self.debug:
@@ -118,29 +119,38 @@ class TemporalKnowledgeGraphCompletion(tasks.Task, core.Configurable):
             all_index = torch.arange(graph.num_node, device=self.device)
             t_preds = []
             h_preds = []
+            print(all_index)
             num_negative = graph.num_node if self.full_batch_eval else self.num_negative
-
+            # print(f"[DEBUG] num_negative: {num_negative}")
             for neg_chunk in all_index.split(num_negative):
                 r_index = pos_r.unsqueeze(-1).expand(-1, len(neg_chunk))
                 q_time = pos_time
                 # tail ranking
+                # print(f"negative {neg_chunk} pos_h {pos_h} pos_t {pos_t}")
                 h_index, t_index = torch.meshgrid(pos_h, neg_chunk)
+                # print(f"[DEBUG] h_index shape: {h_index.shape} {h_index}, t_index shape: {t_index.shape} {t_index}")
                 t_pred = self.model(graph, h_index, t_index, r_index, query_time=q_time,
                                     all_loss=all_loss, metric=metric)
+                # print(f"[DEBUG] t_pred shape: {t_pred.shape} {t_pred}")
                 t_preds.append(t_pred)
             t_pred = torch.cat(t_preds, dim=-1)
+            # print(f"t+pred affter {t_pred.shape} {t_pred}")
 
             for neg_chunk in all_index.split(num_negative):
                 r_index = pos_r.unsqueeze(-1).expand(-1, len(neg_chunk))
                 q_time = pos_time
                 # head ranking
                 t_index, h_index = torch.meshgrid(pos_t, neg_chunk)
+                # print(f"t_index{t_index} h_index 143 {h_index}")
                 h_pred = self.model(graph, h_index, t_index, r_index, query_time=q_time,
                                     all_loss=all_loss, metric=metric)
+                # print(f"h_pred shape: {h_pred.shape} {h_pred}")
                 h_preds.append(h_pred)
             h_pred = torch.cat(h_preds, dim=-1)
 
             pred = torch.stack([t_pred, h_pred], dim=1).cpu()
+            # print(f"final affter {pred.shape} {pred}")
+
         else:
             if self.debug:
                 print("[DEBUG] Training mode in predict")
@@ -173,7 +183,10 @@ class TemporalKnowledgeGraphCompletion(tasks.Task, core.Configurable):
             h_index_head = torch.cat([pos_h.unsqueeze(-1), neg_index[B:]], dim=1)
             pred_head = self.model(graph, h_index_head, t_index_head, r_index_head, query_time=q_time_head,
                                     all_loss=all_loss, metric=metric)
+            
 
+            # print(f"pred_tail : {pred_tail.shape} {pred_tail}")
+            # print(f"pred_head : {pred_head.shape} {pred_head}")
             # Stack predictions for compatibility with evaluation
             pred = torch.stack([pred_tail, pred_head], dim=1)
             if self.debug:
@@ -186,8 +199,8 @@ class TemporalKnowledgeGraphCompletion(tasks.Task, core.Configurable):
         return pred
 
     def target(self, batch):
-        if self.debug:
-            print(f"[DEBUG] Entering target. Batch shape: {batch.shape}")
+        # if self.debug:
+        # print(f"[DEBUG] Entering target. Batch shape: {batch.shape}")
         # evaluation: produce time-filtered masks for rankings
         B = len(batch)
         graph = self.fact_graph
@@ -223,19 +236,33 @@ class TemporalKnowledgeGraphCompletion(tasks.Task, core.Configurable):
             print(f"[DEBUG] target shape: {target}")
             print(f"[DEBUG] mask shape: {mask.shape}")
             print("[DEBUG] Exiting target")
-        
+        print(mask[0, 0, target[0, 0]])  # tail mask at true target
+        print(mask[0, 1, target[0, 1]])  # head mask at true target
+
         
         return mask, target
     
     def evaluate(self, pred, target):
-        mask, target = target
+      
+        self.progress += 1
 
+        mask, target = target
+        print(f"Mask : {mask.shape} {mask}")
+        print(f"Target : {target.shape} {target}")
+        if self.progress % 100 == 0:
+            print(f"[DEBUG] Entering evaluate. Pred shape: {pred.shape}, Target shape: {target.shape}")
         print(f"Pred : {pred.shape}")
+        print("Gold in mask (tail):", mask[0,0,target[0,0]])
+        print("Gold in mask (head):", mask[0,1,target[0,1]])
 
         pos_pred = pred.gather(-1, target.to(pred.device).unsqueeze(-1))
+        print(f"Pos_pred : {pos_pred.shape} {pos_pred}")
         ranking = torch.sum((pos_pred <= pred) & mask.to(pred.device), dim=-1) + 1
-
+        print(f"Ranking : {ranking.shape} {ranking}")
         metric = {}
+        ranking = torch.minimum(ranking[:, 0],pred.shape[2]-ranking[:, 1])
+        print(f"Ranking : {ranking.shape} {ranking}")
+
         for _metric in self.metric:
             if _metric == "mr":
                 score = ranking.float().mean()

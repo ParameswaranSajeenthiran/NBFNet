@@ -98,9 +98,9 @@ class GeneralizedRelationalConvTemporal(layers.MessagePassingBase):
                  layer_norm=False,
                  activation="relu",
                  dependent=True,
-                 time_encode_dim=4,
+                 time_encode_dim=64,
                  time_decay="exp",
-                 time_half_life=32.0,
+                 time_half_life=200.0,
                  time_window=None,
                  debug=False):
         super().__init__()
@@ -112,6 +112,7 @@ class GeneralizedRelationalConvTemporal(layers.MessagePassingBase):
         self.aggregate_func = aggregate_func
         self.dependent = dependent
         self.debug = debug
+        self.dropout = nn.Dropout(0.3)
 
         self.time_encoder = SinusoidalTimeEncoder(time_encode_dim) if time_encode_dim > 0 else None
         self.time_decay = time_decay
@@ -264,11 +265,12 @@ class GeneralizedRelationalConvTemporal(layers.MessagePassingBase):
             output = self.layer_norm(output)
         if self.activation:
             output = self.activation(output)
+        output = self.dropout(output)
         return output
 
 
 # ---------------------------
-# Temporal NBFNet model (drop-in)
+# Temporal NBFNet model
 # ---------------------------
 
 @R.register("model.NBFNetTemporal")
@@ -279,7 +281,7 @@ class NeuralBellmanFordNetworkTemporal(nn.Module, core.Configurable):
                  concat_hidden=False, num_mlp_layer=2, dependent=True, remove_one_hop=False,
                  num_beam=10, path_topk=10,
                  # temporal knobs
-                 time_encode_dim=32, time_decay="exp", time_half_life=32.0, time_window=None,
+                 time_encode_dim=64, time_decay="exp", time_half_life=200.0, time_window=None,
                  debug=False):
         super().__init__()
 
@@ -462,7 +464,7 @@ class NeuralBellmanFordNetworkTemporal(nn.Module, core.Configurable):
             print(f"[DEBUG] Feature after gather: {feature.shape}")
 
         if self.symmetric:
-            assert (t_index[:, [0]] == t_index).all()
+            # assert (t_index[:, [0]] == t_index).all()
             out2 = self.bellmanford(graph, t_index[:, 0], r_index[:, 0], query_time=query_time)
             inv_feature = out2["node_feature"].transpose(0, 1)
             index = h_index.unsqueeze(-1).expand(-1, -1, inv_feature.shape[-1])

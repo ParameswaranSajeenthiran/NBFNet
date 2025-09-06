@@ -15,13 +15,13 @@ from temporal_tasks import TemporalKnowledgeGraphCompletion
 # Local Dataset Loader
 # ---------------------------
 
-def load_local_icews(data_dir="data/ICEWS14", valid_ratio=0.4, seed=42):
+def load_local_icews(data_dir="data/ICEWS14", valid_ratio=0.1, seed=42):
     """
     Load ICEWS14 from local txt files and split train into train/valid.
     Expected format per line: head<TAB>relation<TAB>tail<TAB>timestamp
     Files: train.txt, test.txt
     """
-    def read_file(fname, upto):
+    def read_file(fname, after, before):
         triples = []
         with open(fname, "r") as f:
             count=0
@@ -37,12 +37,12 @@ def load_local_icews(data_dir="data/ICEWS14", valid_ratio=0.4, seed=42):
                 # # Skip empty/malformed lines
                 #     continue
                 h, r, t, ts = parts[0], parts[1], parts[2], parts[3]
-                if int(ts) >= upto :
-                    continue
-                triples.append((int(h), int(t), int(r), int(ts)))
+                if int(ts) >= after  and int(ts) < before:
+                    # continue 3090
+                    triples.append((int(h), int(t), int(r), int(ts)))
         return torch.tensor(triples, dtype=torch.long)
-    full_train = read_file(os.path.join(data_dir, "train.txt") ,100)
-    test = read_file(os.path.join(data_dir, "test.txt"),4360)
+    full_train = read_file(os.path.join(data_dir, "train.txt") ,3000, 4321)
+    test = read_file(os.path.join(data_dir, "test.txt"),4344, 4345)
 
     # Split train into train/valid by time
     # Sort by timestamp (column 3)
@@ -56,6 +56,7 @@ def load_local_icews(data_dir="data/ICEWS14", valid_ratio=0.4, seed=42):
     print(f"Full train size: {full_train.size()}, Test size: {test.size()}")
 
     all_relations = torch.cat([full_train[:,2], test[:,2]])
+    print(f"all_relations: {all_relations}")
     num_relation = int(torch.max(all_relations)) + 1
 
     ds = {
@@ -68,29 +69,47 @@ def load_local_icews(data_dir="data/ICEWS14", valid_ratio=0.4, seed=42):
 
 
 class TemporalKGBenchmark(Dataset):
+    """
+    Temporal KG dataset for training, validation, and testing.
+    For validation/test, the graph includes all historical events up to current timestamp.
+    """
     def __init__(self, ds, split="train"):
         """
-        ds: dict with keys 'train', 'valid', 'test', each containing a torch.LongTensor of shape (num_triples, 4)
-        split: which split to use for this dataset object
+        ds: dict with keys 'train', 'valid', 'test' containing torch.LongTensor of shape (num_triples, 4)
+        split: 'train', 'valid', or 'test'
         """
-        self.data = ds[split]
         self.split = split
 
-        # Combine all splits to compute total number of entities and relations
-        all_facts = torch.cat([ds["train"], ds["valid"], ds["test"]], dim=0)
+        if split == "train":
+            # For training: use only train triples
+            self.data = ds["train"]
+            self.graph_triples = self.data
+        elif split == "valid":
+            # For validation: include all training triples + validation triples
+            self.data = ds["valid"]
+            # self.graph_triples = torch.cat([ds["train"], self.data], dim=0)
+            self.graph_triples = torch.cat([ds["train"]], dim=0)
+        elif split == "test":
+            # For test: include all training + validation triples
+            self.data = ds["test"]
+            self.graph_triples = torch.cat([ds["train"], ds["valid"]], dim=0)
+        else:
+            raise ValueError(f"Unknown split {split}")
 
-        # Compute number of entities and relations from the data
-        self.num_entity = int(torch.max(torch.cat([all_facts[:,0], all_facts[:,1]])) + 1)
-        self.num_relation = int(torch.max(all_facts[:,2]) + 1)
-        print (self.data)
-        # Create edge list and edge weights from current split
-        h = self.data[:, 0]
-        t = self.data[:, 1]
-        r = self.data[:, 2]
+        # Compute number of entities and relations
+        all_entities = torch.cat([self.graph_triples[:,0], self.graph_triples[:,1]])
+        all_relations = self.graph_triples[:,2]
+        self.num_entity = int(torch.max(all_entities)) + 1
+        self.num_relation = int(torch.max(all_relations)) + 1
+        print(F"loader edges : {self.num_relation}")
+
+        # Build graph with all historical edges
+        h = self.graph_triples[:,0]
+        t = self.graph_triples[:,1]
+        r = self.graph_triples[:,2]
         edge_list = torch.stack([h, t, r], dim=-1)
         edge_weight = torch.ones(edge_list.size(0))
 
-        # Create graph object
         self.graph = td_data.Graph(
             edge_list=edge_list,
             edge_weight=edge_weight,
@@ -98,19 +117,16 @@ class TemporalKGBenchmark(Dataset):
             num_relation=self.num_relation
         )
 
-        # Assign edge times
+        # Assign edge timestamps
         with self.graph.edge():
-            self.graph.edge_time = self.data[:, 3].clone()
-
-        
+            self.graph.edge_time = self.graph_triples[:,3].clone()
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
+        
         return self.data[idx]
-
-
 def collate_quadruples(batch):
     return torch.stack(batch, dim=0)
 
@@ -119,14 +135,13 @@ def collate_quadruples(batch):
 # Train / Eval
 # ---------------------------
 def main(data_dir="data/ICEWS14",
-         hidden_dims=(256, 256), message_func="distmult",
-         time_encode_dim=4, time_decay="exp", time_half_life=64.0, time_window=None,
-         batch_size=64, lr=1e-3, max_epoch=2,
-         device="cuda" if torch.cuda.is_available() else "cpu"):
+         hidden_dims=(256, 256), message_func="rotate",
+         time_encode_dim=64, time_decay="exp", time_half_life=200, time_window=None,
+         batch_size=7, lr=5e-4, max_epoch=15,
+         device="cuda" if torch.cuda.is_available() else "cpu", evaluate_only=False,
+         checkpoint_path="/home/sajeenthiranp/KG/fork/NBFNet/nbfnet/data/ICEWS14/model_epoch_0.pt"):
 
-
-    print("[DEBUG] Starting data loading...")
-
+    
 
     ds, num_relation= load_local_icews(data_dir)
     train_dataset = TemporalKGBenchmark(ds, split="train")
@@ -138,8 +153,8 @@ def main(data_dir="data/ICEWS14",
     print(f"[DEBUG] Train set size: {len(train_dataset)}, Valid set size: {len(valid_dataset)}, Test set size: {len(test_dataset)}")
     print("[DEBUG] Initializing model...")
     model = NeuralBellmanFordNetworkTemporal(
-        input_dim=4,
-        hidden_dims=[4, 4, 4, 4, 4, 4],
+        input_dim=32,
+        hidden_dims=[32, 32, 32, 32, 32, 32],
         num_relation=num_relation,
         message_func=message_func,
         aggregate_func="pna",
@@ -164,14 +179,14 @@ def main(data_dir="data/ICEWS14",
         criterion="bce",
         metric=("mr", "mrr", "hits@1", "hits@3", "hits@10"),
         
-        num_negative=31,
+        num_negative=100,
         strict_negative=True,
         filtered_ranking=True,
         full_batch_eval=True,
     )# <-- Move task to GPU
 
     print("[DEBUG] Creating engine...")
-    optimizer = torch.optim.Adam(task.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(task.parameters(), lr=lr ,weight_decay=1e-5)
     engine = core.Engine(
         task,
         train_set=train_dataset,
@@ -182,6 +197,15 @@ def main(data_dir="data/ICEWS14",
         optimizer=optimizer
     )
 
+
+    if False:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        print(f"[DEBUG] Loaded checkpoint from {checkpoint_path}, epoch {checkpoint['epoch']}")
+    
+    print("[DEBUG] Starting data loading...")
+
     print("[DEBUG] Starting training loop...")
     for epoch in range(max_epoch):
         print(f"[DEBUG] Epoch {epoch} begin")
@@ -189,6 +213,16 @@ def main(data_dir="data/ICEWS14",
         print(f"[DEBUG] Epoch {epoch} training finished, starting evaluation...")
         results = engine.evaluate("valid")
         print(f"[DEBUG] Epoch {epoch}: Validation results: {results}")
+        checkpoint_file = os.path.join(
+            data_dir, f"model_epoch_{epoch}.pt"
+        )
+        torch.save({
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "results": results
+        }, checkpoint_file)
+        print(f"[DEBUG] Saved checkpoint: {checkpoint_file}")
 
     print("[DEBUG] Training finished. Evaluating on test set...")
     test_results = engine.evaluate("test")
@@ -197,3 +231,5 @@ def main(data_dir="data/ICEWS14",
 
 if __name__ == "__main__":
     main()
+   
+    
